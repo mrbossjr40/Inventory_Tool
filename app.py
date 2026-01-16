@@ -68,19 +68,21 @@ def build_details_from_remaining_columns(df_raw: pd.DataFrame, used_cols: set[st
     if not remaining:
         return pd.Series([""] * len(df_raw), index=df_raw.index)
 
-    def row_details(row):
-        parts = []
-        for c in remaining:
-            v = row.get(c, "")
-            if pd.isna(v):
-                continue
-            s = str(v).strip()
-            if not s or s.lower() == "nan":
-                continue
-            parts.append(f"{c}: {s}")
-        return " | ".join(parts)
+    tmp = df_raw[remaining].copy()
 
-    return df_raw.apply(row_details, axis=1)
+    # convert to string safely
+    tmp = tmp.where(~tmp.isna(), "")
+    tmp = tmp.astype(str).apply(lambda col: col.str.strip())
+
+    # remove "nan" literals
+    tmp = tmp.replace({"nan": "", "NaN": ""})
+
+    # prefix each column value with "col: " only when non-empty
+    for c in remaining:
+        tmp[c] = tmp[c].where(tmp[c] == "", c + ": " + tmp[c])
+
+    # join non-empty parts per row
+    return tmp.agg(lambda row: " | ".join([v for v in row if v]), axis=1)
 
 def build_standard_df(df_raw: pd.DataFrame, mapping: dict) -> pd.DataFrame:
     df = df_raw.copy()
