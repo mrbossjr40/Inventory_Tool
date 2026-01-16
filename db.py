@@ -74,41 +74,42 @@ def load_dataset(engine: Engine, dataset_id: int) -> pd.DataFrame:
     )
 
 
-def replace_dataset_with_df(engine: Engine, dataset_id: int, df: pd.DataFrame) -> None:
-    """
-    Replace all records in dataset_id with df (canonical columns).
-    """
+def replace_dataset_with_df(engine, dataset_id: int, df: pd.DataFrame) -> None:
     df = df.copy()
-    for c in CANON_COLS:
+    for c in ["supplier","product","details","website","phone","login_info"]:
         if c not in df.columns:
             df[c] = ""
-    df = df[CANON_COLS].fillna("").astype(str)
+    df = df[["supplier","product","details","website","phone","login_info"]].fillna("").astype(str)
+
+    # drop empty required rows
+    df["supplier"] = df["supplier"].str.strip()
+    df["product"] = df["product"].str.strip()
+    df = df[(df["supplier"] != "") & (df["product"] != "")]
 
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM records WHERE dataset_id=:did"), {"did": dataset_id})
+
         if df.empty:
             return
 
-        conn.execute(
-            text(
-                """
-                INSERT INTO records(dataset_id, supplier, product, details, website, phone, login_info)
-                VALUES (:did, :supplier, :product, :details, :website, :phone, :login_info)
-                """
-            ),
-            [
-                {
-                    "did": dataset_id,
-                    "supplier": r["supplier"],
-                    "product": r["product"],
-                    "details": r["details"],
-                    "website": r["website"],
-                    "phone": r["phone"],
-                    "login_info": r["login_info"],
-                }
-                for _, r in df.iterrows()
-            ],
+        # Use raw psycopg2 connection for COPY
+        raw = conn.connection.connection  # SQLAlchemy -> DBAPI -> psycopg2 connection
+        cur = raw.cursor()
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        for row in df.itertuples(index=False, name=None):
+            writer.writerow((dataset_id, *row))
+        buf.seek(0)
+
+        cur.copy_expert(
+            """
+            COPY records (dataset_id, supplier, product, details, website, phone, login_info)
+            FROM STDIN WITH (FORMAT CSV)
+            """,
+            buf,
         )
+        cur.close()
 
 
 def add_record(
